@@ -1,42 +1,82 @@
 #!/bin/bash -e
 
+# Internal variables
+keep_downloads=0
+custom_ndk=""
+custom_mesa=""
+author=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ndk)
+            custom_ndk="$2"
+            shift 2
+            ;;
+        --mesa)
+            custom_mesa="$2"
+            shift 2
+            ;;
+        --author)
+            author="$2"
+            shift 2
+            ;;
+        --keep-downloads)
+            keep_downloads=1
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
 # Required packages for building the turnip driver
-deps="meson ninja patchelf unzip curl pip flex bison zip"
+deps="meson ninja patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"
 
 # Android NDK and Mesa version
-ndkver="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
-ndkdir="android-ndk-r28b"
+default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
+ndkver="${custom_ndk:-$default_ndk}"
+ndkfile=$(basename "$ndkver")
+ndkdir=$(basename "$ndkver" .zip)
+ndkdir="${ndkdir%-linux}"
 
-mesaver="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2/mesa-mesa-25.1.0-rc2.zip"
-mesadir="mesa-mesa-25.1.0-rc2"
+ndk_version_code=$(echo "$ndkver" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 1)
+
+default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2/mesa-mesa-25.1.0-rc2.zip"
+mesaver="${custom_mesa:-$default_mesa}"
+mesafile=$(basename "$mesaver")
+mesadir=$(basename "$mesaver" .zip)
+
+mesa_version_code=$(echo "$mesaver" | grep -oP '(?<=mesa-)[\d\.]+' | head -n 1)
+mesa_rc_version=" RC$(echo "$mesaver" | grep -oP '(?<=-rc)[0-9]+' | head -n 1)"
+
+default_author="v3kt0r-87"
+author="${author:-$default_author}"
+
+files_to_keep=("$ndkdir" "$ndkfile" "$mesafile") # "$mesadir" removed so that it is always refreshed for patching
 
 # Colors for terminal output
 green='\033[0;32m'
 red='\033[0;31m'
 nocolor='\033[0m'
 
+patches_dir="$(pwd)/patches"
 workdir="$(pwd)/turnip_workdir"
 magiskdir="$workdir/turnip_module"
 
 DRIVER_FILE="vulkan.turnip.so"
 META_FILE="meta.json"
-ZIP_FILE="Turnip-25.1.0-EMULATOR.zip"
+ZIP_FILE="Turnip-$mesa_version_code-EMULATOR.zip"
 
 clear
-
-# Clean work directory if it exists
-if [ -d "$workdir" ]; then
-    echo "Work directory already exists. Cleaning before proceeding..." $'\n'
-    rm -rf "$workdir"
-    sleep 2
-fi
 
 echo "Checking system for required dependencies..."
 
 # Check for required dependencies 
 for deps_chk in $deps; do
     sleep 0.25
-    if command -v "$deps_chk" >/dev/null 2>&1; then
+    if apt list --installed 2>/dev/null | grep -q "^$deps_chk" >/dev/null 2>&1; then
         echo -e "$green - $deps_chk found $nocolor"
     else
         echo -e "$red - $deps_chk not found, cannot continue. $nocolor"
@@ -47,33 +87,99 @@ done
 # Install missing dependencies automatically
 if [ "$deps_missing" == "1" ]; then
     echo "Missing dependencies, installing them now..." $'\n'
-    sudo apt install -y meson patchelf unzip curl python3-pip flex bison zip python3-mako python-is-python3 &> /dev/null
+    sudo apt install -y "${deps[@]}" &> /dev/null    
 fi
 
 clear
 
-echo "Creating and entering the work directory..." $'\n'
-mkdir -p "$workdir" && cd "$_"
+if [ ! -d "$workdir" ]; then
+    echo "Creating the work directory..." $'\n'
+    mkdir -p "$workdir" && cd "$_"
+else
+    cd "$workdir"
+
+    find_conditions=""
+    if [[ $keep_downloads -eq 1 ]]; then
+        for name in "${files_to_keep[@]}"; do    
+            if [ -e "$name" ]; then #TODO: ADD INTEGRITY CHECK        
+                echo "[*] Keeping $name" $'\n'
+                if [ -n "$find_conditions" ]; then
+                    find_conditions+=" -or "    
+                fi
+                find_conditions+=" -name '*$name'"   
+            fi    
+        done
+    fi
+
+    if [ -n "$find_conditions" ]; then
+        echo "Cleaning up workdir (while keeping zips)..." $'\n'
+        #eval "find . -mindepth 1 \( $find_conditions \) -prune -o -print"
+        eval "find . -mindepth 1 \( $find_conditions \) -prune -o -exec rm -rf {} + 2>/dev/null" || true
+    else
+        echo "Cleaning up workdir..." $'\n'
+        rm -rf ./*
+    fi
+fi
 
 # Download Android NDK
-echo "Downloading Android NDK..." $'\n'
-curl $ndkver --output "$ndkdir".zip &> /dev/null
-
-clear
-
-echo "Extracting Android NDK..." $'\n'
-unzip "$ndkdir".zip &> /dev/null
+if [ ! -d "$ndkdir" ]; then
+    if [ ! -f "$ndkfile" ]; then
+        echo "Downloading Android NDK..." $'\n'
+        curl $ndkver --output "$ndkfile" &> /dev/null
+    fi
+    echo "Extracting Android NDK..." $'\n'
+    unzip "$ndkfile" &> /dev/null
+fi
 
 # Download Mesa source
-echo "Downloading Latest Mesa source ..." $'\n'
-curl $mesaver --output "$mesadir".zip &> /dev/null
+if [ ! -d "$mesadir" ]; then
+    if [ ! -f "$mesafile" ]; then
+        echo "Downloading Latest Mesa source ..." $'\n'
+        curl $mesaver --output "$mesafile" &> /dev/null
+    fi
+    echo "Extracting Mesa source..." $'\n'
+    unzip "$mesafile" &> /dev/null
+fi
+
+cd $mesadir
+
+sleep 2
 
 clear
 
-echo "Extracting Mesa source..." $'\n'
-unzip "$mesadir".zip &> /dev/null
-cd $mesadir
+# Applying patches
+echo "Applying patches..." $'\n'
+srcdir="$(pwd)" #since we're in $mesadir
+if [[ -d "$patches_dir" ]]; then
+    if ls "$patches_dir"/*.patch 1> /dev/null 2>&1; then        
+        # Apply patches here
 
+        for patch in "$patches_dir"/*.patch; do       
+            if [[ -f "$patch" ]]; then
+                patch_file_name=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
+
+                echo -n "Applying $(basename "$patch")... "                
+                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true
+                
+                if echo "$patch_output" | tail -n 1 | grep -q "patching file $patch_file_name"; then
+                    echo "Success!" $'\n'
+                else
+                    echo "failed. Output: "
+                    echo "$patch_output"
+                    exit 1
+                fi
+            fi
+        done
+    else
+        echo "No patch files found. Skipping patches." $'\n'
+    fi    
+else
+    echo "No patches directory found. Skipping patches." $'\n'
+fi
+
+sleep 2
+
+clear
 # Set NDK Clang bin directory
 ndk_bin="$workdir/$ndkdir/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
@@ -152,8 +258,6 @@ echo "Using patchelf to match .so name..." $'\n'
 cp "$workdir"/"$mesadir"/build-android-aarch64/src/freedreno/vulkan/libvulkan_freedreno.so "$workdir"
 cd "$workdir"
 
-
-
 if ! [ -a libvulkan_freedreno.so ]; then
     echo -e "$red Build failed! libvulkan_freedreno.so not found $nocolor" && exit 1
 fi
@@ -225,11 +329,11 @@ EOF
 cat <<EOF >"module.prop"
 id=turnip-mesa
 name=Freedreno Turnip Vulkan Driver RC builds
-version=v25.1.0
-versionCode=20250425
-author=V3KT0R-87
+version=v$mesa_version_code
+versionCode=$(date +%Y%m%d)
+author=$author
 description=Turnip is an open-source vulkan driver for devices with Adreno 6xx-7xx GPUs.
-updateJson=https://raw.githubusercontent.com/v3kt0r-87/Mesa-Turnip-Builder/refs/heads/stable/update.json
+updateJson=https://raw.githubusercontent.com/$default_author/Mesa-Turnip-Builder/refs/heads/stable/update.json
 EOF
 
 cat <<EOF >"customize.sh"
@@ -240,7 +344,7 @@ ui_print ""
 ui_print "Version=\$MODVER "
 ui_print "MagiskVersion=\$MAGISK_VER"
 ui_print ""
-ui_print "Freedreno Turnip Vulkan Driver -V3KT0R"
+ui_print "Freedreno Turnip Vulkan Driver - $author"
 ui_print "Adreno Driver Support Group - Telegram"
 ui_print ""
 sleep 1.25
@@ -281,13 +385,13 @@ sleep 1.25
 ui_print ""
 ui_print "All done, Please REBOOT device"
 ui_print ""
-ui_print "BY: @VEKT0R_87"
+ui_print "BY: @$author"
 ui_print ""
 EOF
 
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
-zip -r $workdir/Turnip-25.1.0-MAGISK-KSU.zip * &> /dev/null
-if ! [ -a $workdir/Turnip-25.1.0-MAGISK-KSU.zip ]; then
+zip -r $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip * &> /dev/null
+if ! [ -a $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
 else
     clear
@@ -304,9 +408,9 @@ else
  cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
-  "name": "Freedreno Turnip Driver v25.1.0 RC2",
-  "description": "Compiled using Android NDK 28",
-  "author": "v3kt0r-87",
+  "name": "Freedreno Turnip Driver v$mesa_version_code$mesa_rc_version",
+  "description": "Compiled using Android NDK $ndk_version_code",
+  "author": "$author",
   "packageVersion": "3",
   "vendor": "Mesa3D",
   "driverVersion": "Vulkan 1.4",
@@ -324,8 +428,8 @@ EOF
     clear
 
     echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-    echo $workdir/Turnip-25.1.0-MAGISK-KSU.zip $'\n'
-    echo $workdir/Turnip-25.1.0-EMULATOR.zip $'\n'
+    echo $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip $'\n'
+    echo $workdir/Turnip-$mesa_version_code.zip $'\n'
     echo -e "$green Build Finished :). $nocolor" $'\n'
 
     # Cleanup 

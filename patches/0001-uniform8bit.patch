@@ -1,0 +1,11 @@
+--- src/freedreno/vulkan/tu_device.cc	2025-04-28 17:11:28.519535155 -0300
++++ src/freedreno/vulkan/tu_device.cc	2025-04-28 17:09:21.152957341 -0300
+@@ -419,7 +419,7 @@
+    features->samplerMirrorClampToEdge            = true;
+    features->drawIndirectCount                   = true;
+    features->storageBuffer8BitAccess             = pdevice->info->a7xx.storage_8bit;
+-   features->uniformAndStorageBuffer8BitAccess   = false;
++   features->uniformAndStorageBuffer8BitAccess   = true;
+    features->storagePushConstant8                = false;
+    features->shaderBufferInt64Atomics =
+       pdevice->info->a7xx.has_64b_ssbo_atomics;

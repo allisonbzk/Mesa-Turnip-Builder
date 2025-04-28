@@ -1,0 +1,11 @@
+--- src/freedreno/vulkan/tu_device.cc	2025-04-28 17:11:28.519535155 -0300
++++ src/freedreno/vulkan/tu_device.cc	2025-04-28 17:14:36.535592895 -0300
+@@ -403,7 +403,7 @@
+ 
+    /* Vulkan 1.1 */
+    features->storageBuffer16BitAccess            = pdevice->info->a6xx.storage_16bit;
+-   features->uniformAndStorageBuffer16BitAccess  = false;
++   features->uniformAndStorageBuffer16BitAccess  = true;
+    features->storagePushConstant16               = false;
+    features->storageInputOutput16                = false;
+    features->multiview                           = true;
