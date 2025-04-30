@@ -1,7 +1,10 @@
 #!/bin/bash -e
 
+# Required packages for building the turnip driver
+deps="meson ninja-build patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"
+
 # Internal variables
-keep_downloads=0
+preserve_cache=0
 custom_ndk=""
 custom_mesa=""
 author=""
@@ -20,8 +23,8 @@ while [[ $# -gt 0 ]]; do
             author="$2"
             shift 2
             ;;
-        --keep-downloads)
-            keep_downloads=1
+        --preserve-cache)
+            preserve_cache=1
             shift
             ;;
         *)
@@ -30,9 +33,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Required packages for building the turnip driver
-deps="meson ninja patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"
 
 # Android NDK and Mesa version
 default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
@@ -47,14 +47,17 @@ default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2
 mesaver="${custom_mesa:-$default_mesa}"
 mesafile=$(basename "$mesaver")
 mesadir=$(basename "$mesaver" .zip)
-
 mesa_version_code=$(echo "$mesaver" | grep -oP '(?<=mesa-)[\d\.]+' | head -n 1)
-mesa_rc_version=" RC$(echo "$mesaver" | grep -oP '(?<=-rc)[0-9]+' | head -n 1)"
+mesa_release=$(echo "$mesaver" | grep -oP '[^-]+(?=\.zip$)' | head -n 1)
+
+# echo $mesaver
+# echo $mesafile
+# echo $mesadir
+# echo $mesa_version_code
+# echo $mesa_release
 
 default_author="v3kt0r-87"
 author="${author:-$default_author}"
-
-files_to_keep=("$ndkdir" "$ndkfile" "$mesafile") # "$mesadir" removed so that it is always refreshed for patching
 
 # Colors for terminal output
 green='\033[0;32m'
@@ -74,12 +77,14 @@ clear
 echo "Checking system for required dependencies..."
 
 # Check for required dependencies 
+aptlist=$(apt list --installed 2>/dev/null)
 for deps_chk in $deps; do
     sleep 0.25
-    if apt list --installed 2>/dev/null | grep -q "^$deps_chk" >/dev/null 2>&1; then
+    
+    if echo "$aptlist" | grep -q "^$deps_chk" >/dev/null 2>&1; then
         echo -e "$green - $deps_chk found $nocolor"
     else
-        echo -e "$red - $deps_chk not found, cannot continue. $nocolor"
+        echo -e "$red - $deps_chk not found $nocolor"
         deps_missing=1
     fi
 done
@@ -87,10 +92,14 @@ done
 # Install missing dependencies automatically
 if [ "$deps_missing" == "1" ]; then
     echo "Missing dependencies, installing them now..." $'\n'
-    sudo apt install -y "${deps[@]}" &> /dev/null    
+    sudo apt install -y $deps &> /dev/null    
 fi
 
 clear
+
+ndk_cache="$ndkdir $ndkfile"
+mesa_cache="$mesadir $mesafile"
+cachelist="$ndk_cache $mesa_cache"
 
 if [ ! -d "$workdir" ]; then
     echo "Creating the work directory..." $'\n'
@@ -99,8 +108,8 @@ else
     cd "$workdir"
 
     find_conditions=""
-    if [[ $keep_downloads -eq 1 ]]; then
-        for name in "${files_to_keep[@]}"; do    
+    if [[ $preserve_cache -eq 1 ]]; then
+        for name in $cachelist; do    
             if [ -e "$name" ]; then #TODO: ADD INTEGRITY CHECK        
                 echo "[*] Keeping $name" $'\n'
                 if [ -n "$find_conditions" ]; then
@@ -124,8 +133,16 @@ fi
 # Download Android NDK
 if [ ! -d "$ndkdir" ]; then
     if [ ! -f "$ndkfile" ]; then
-        echo "Downloading Android NDK..." $'\n'
-        curl $ndkver --output "$ndkfile" &> /dev/null
+        if [[ "$ndkver" =~ ^https?:// ]]; then
+            echo "Downloading Android NDK..." $'\n'
+            curl $ndkver --output "$ndkfile" &> /dev/null
+        elif [[ "$ndkver" == /* || "$ndkver" == ~/* || "$ndkver" == .* || "$ndkver" == */* ]]; then
+            echo "Copying Android NDK..." $'\n'
+            cp $ndkver $ndkfile
+        else
+            echo "Invalid NDK source: $ndkver" $'\n'
+            exit 1
+        fi        
     fi
     echo "Extracting Android NDK..." $'\n'
     unzip "$ndkfile" &> /dev/null
@@ -134,8 +151,16 @@ fi
 # Download Mesa source
 if [ ! -d "$mesadir" ]; then
     if [ ! -f "$mesafile" ]; then
-        echo "Downloading Latest Mesa source ..." $'\n'
-        curl $mesaver --output "$mesafile" &> /dev/null
+        if [[ "$mesaver" =~ ^https?:// ]]; then
+            echo "Downloading Mesa source..." $'\n'
+            curl $mesaver --output "$mesafile" &> /dev/null
+        elif [[ "$mesaver" == /* || "$mesaver" == ~/* || "$mesaver" == .* || "$mesaver" == */* ]]; then
+            echo "Copying Mesa source..." $'\n'
+            cp $mesaver $mesafile
+        else
+            echo "Invalid Mesa source: $mesaver" $'\n'
+            exit 1
+        fi        
     fi
     echo "Extracting Mesa source..." $'\n'
     unzip "$mesafile" &> /dev/null
@@ -328,7 +353,7 @@ EOF
 
 cat <<EOF >"module.prop"
 id=turnip-mesa
-name=Freedreno Turnip Vulkan Driver RC builds
+name=Freedreno Turnip Vulkan Driver
 version=v$mesa_version_code
 versionCode=$(date +%Y%m%d)
 author=$author
@@ -408,7 +433,7 @@ else
  cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
-  "name": "Freedreno Turnip Driver v$mesa_version_code$mesa_rc_version",
+  "name": "Freedreno Turnip Driver v$mesa_version_code $mesa_release",
   "description": "Compiled using Android NDK $ndk_version_code",
   "author": "$author",
   "packageVersion": "3",
