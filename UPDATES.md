@@ -1,4 +1,4 @@
-**May, 01 2025**: Updated Mesa to v25.2.0-devel (from mainline)
+**May, 01 2025**: Updated default Mesa source to mainline (currently v25.2.0-devel)
 
 **Requires Android 14 and above to work properly**  
 **Android 13 users can still install**
