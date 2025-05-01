@@ -33,28 +33,30 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+#
+sdkver="33"
+andver=$(echo "$(curl -s "https://developer.android.com/tools/releases/platforms")" | grep -oP "Android \K[0-9.]+(?=.*?API level $sdkver)" | head -n1) || true
+andver="${andver:-"(sdk$sdkver)"}"
+# echo $andver
+# exit
 
 # Android NDK and Mesa version
 default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
-ndkver="${custom_ndk:-$default_ndk}"
-ndkfile=$(basename "$ndkver")
-ndkdir=$(basename "$ndkver" .zip)
+ndksrc="${custom_ndk:-$default_ndk}"
+ndkfile=$(basename "$ndksrc")
+ndkdir=$(basename "$ndksrc" .zip)
 ndkdir="${ndkdir%-linux}"
 
-ndk_version_code=$(echo "$ndkver" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 1)
+ndkver=$(echo "$ndksrc" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 1)
 
-default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2/mesa-mesa-25.1.0-rc2.zip"
-mesaver="${custom_mesa:-$default_mesa}"
-mesafile=$(basename "$mesaver")
-mesadir=$(basename "$mesaver" .zip)
-mesa_version_code=$(echo "$mesaver" | grep -oP '(?<=mesa-)[\d\.]+' | head -n 1)
-mesa_release=$(echo "$mesaver" | grep -oP '[^-]+(?=\.zip$)' | head -n 1)
-
+#default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2/mesa-mesa-25.1.0-rc2.zip" 
+default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/main/mesa-main.zip"
+mesasrc="${custom_mesa:-$default_mesa}"
+mesafile=$(basename "$mesasrc")
+mesadir=$(basename "$mesasrc" .zip)
+mesaver=$(echo "$mesadir" | grep -oP '(?<=mesa-)[\d\.]+-.+' | head -n 1)
 # echo $mesaver
-# echo $mesafile
-# echo $mesadir
-# echo $mesa_version_code
-# echo $mesa_release
+# exit
 
 default_author="v3kt0r-87"
 author="${author:-$default_author}"
@@ -70,7 +72,6 @@ magiskdir="$workdir/turnip_module"
 
 DRIVER_FILE="vulkan.turnip.so"
 META_FILE="meta.json"
-ZIP_FILE="Turnip-$mesa_version_code-EMULATOR.zip"
 
 clear
 
@@ -79,7 +80,7 @@ echo "Checking system for required dependencies..."
 # Check for required dependencies 
 aptlist=$(apt list --installed 2>/dev/null)
 for deps_chk in $deps; do
-    sleep 0.25
+    sleep 0.025
     
     if echo "$aptlist" | grep -q "^$deps_chk" >/dev/null 2>&1; then
         echo -e "$green - $deps_chk found $nocolor"
@@ -133,14 +134,14 @@ fi
 # Download Android NDK
 if [ ! -d "$ndkdir" ]; then
     if [ ! -f "$ndkfile" ]; then
-        if [[ "$ndkver" =~ ^https?:// ]]; then
+        if [[ "$ndksrc" =~ ^https?:// ]]; then
             echo "Downloading Android NDK..." $'\n'
-            curl $ndkver --output "$ndkfile" &> /dev/null
-        elif [[ "$ndkver" == /* || "$ndkver" == ~/* || "$ndkver" == .* || "$ndkver" == */* ]]; then
+            curl $ndksrc --output "$ndkfile" &> /dev/null
+        elif [[ "$ndksrc" == /* || "$ndksrc" == ~/* || "$ndksrc" == .* || "$ndksrc" == */* ]]; then
             echo "Copying Android NDK..." $'\n'
-            cp $ndkver $ndkfile
+            cp $ndksrc $ndkfile
         else
-            echo "Invalid NDK source: $ndkver" $'\n'
+            echo "Invalid NDK source: $ndksrc" $'\n'
             exit 1
         fi        
     fi
@@ -151,26 +152,32 @@ fi
 # Download Mesa source
 if [ ! -d "$mesadir" ]; then
     if [ ! -f "$mesafile" ]; then
-        if [[ "$mesaver" =~ ^https?:// ]]; then
+        if [[ "$mesasrc" =~ ^https?:// ]]; then
             echo "Downloading Mesa source..." $'\n'
-            curl $mesaver --output "$mesafile" &> /dev/null
-        elif [[ "$mesaver" == /* || "$mesaver" == ~/* || "$mesaver" == .* || "$mesaver" == */* ]]; then
+            curl $mesasrc --output "$mesafile" &> /dev/null
+        elif [[ "$mesasrc" == /* || "$mesasrc" == ~/* || "$mesasrc" == .* || "$mesasrc" == */* ]]; then
             echo "Copying Mesa source..." $'\n'
-            cp $mesaver $mesafile
+            cp $mesasrc $mesafile
         else
-            echo "Invalid Mesa source: $mesaver" $'\n'
+            echo "Invalid Mesa source: $mesasrc" $'\n'
             exit 1
         fi        
     fi
     echo "Extracting Mesa source..." $'\n'
     unzip "$mesafile" &> /dev/null
 fi
-
 cd $mesadir
 
 sleep 2
 
 clear
+
+# Fallback for mesaver retrieval
+if [[ -z "$mesaver" ]]; then
+    mesaver=$(cat "VERSION" | grep -oP '^[\d\.]+-.+' | head -n 1)
+fi
+# echo $mesaver
+# exit
 
 # Applying patches
 echo "Applying patches..." $'\n'
@@ -183,10 +190,15 @@ if [[ -d "$patches_dir" ]]; then
             if [[ -f "$patch" ]]; then
                 patch_file_name=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
 
-                echo -n "Applying $(basename "$patch")... "                
-                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true
+                hash1=$(cksum $patch_file_name)
                 
-                if echo "$patch_output" | tail -n 1 | grep -q "patching file $patch_file_name"; then
+                echo -n "Applying $(basename "$patch")... "                
+                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true                
+                
+                hash2=$(cksum $patch_file_name)
+                
+                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patch_file_name"; then
+                if [[ "$hash1" != "$hash2" ]]; then
                     echo "Success!" $'\n'
                 else
                     echo "failed. Output: "
@@ -232,8 +244,8 @@ echo "Creating Meson cross file..." $'\n'
 cat <<EOF >"android-aarch64.txt"
 [binaries]
 ar = '$ndk_bin/llvm-ar'
-c = ['ccache', '$ndk_bin/aarch64-linux-android33-clang']
-cpp = ['ccache', '$ndk_bin/aarch64-linux-android33-clang++', '--start-no-unused-arguments', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++', '--end-no-unused-arguments', '-Wno-error=c++11-narrowing']
+c = ['ccache', '$ndk_bin/aarch64-linux-android$sdkver-clang']
+cpp = ['ccache', '$ndk_bin/aarch64-linux-android$sdkver-clang++', '--start-no-unused-arguments', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++', '--end-no-unused-arguments', '-Wno-error=c++11-narrowing']
 c_ld = '$ndk_bin/ld.lld'
 cpp_ld = '$ndk_bin/ld.lld'
 strip = '$ndk_bin/aarch64-linux-android-strip'
@@ -266,7 +278,7 @@ CC=clang CXX=clang++ meson setup build-android-aarch64 \
     --native-file "$workdir/$mesadir/native.txt" \
     -Dbuildtype=release \
     -Dplatforms=android \
-    -Dplatform-sdk-version=33 \
+    -Dplatform-sdk-version=$sdkver \
     -Dandroid-stub=true \
     -Dgallium-drivers= \
     -Dvulkan-drivers=freedreno \
@@ -354,7 +366,7 @@ EOF
 cat <<EOF >"module.prop"
 id=turnip-mesa
 name=Freedreno Turnip Vulkan Driver
-version=v$mesa_version_code
+version=$mesaver
 versionCode=$(date +%Y%m%d)
 author=$author
 description=Turnip is an open-source vulkan driver for devices with Adreno 6xx-7xx GPUs.
@@ -378,7 +390,7 @@ ui_print ""
 ui_print "Checking Device info ..."
 sleep 1.25
 
-[ \$(getprop ro.system.build.version.sdk) -lt 33 ] && echo "Android 13 is required! Aborting ..." && abort
+[ \$(getprop ro.system.build.version.sdk) -lt $sdkver ] && echo "Android $andver is required! Aborting ..." && abort
 echo ""
 echo "Everything looks fine .... proceeding"
 ui_print ""
@@ -415,8 +427,8 @@ ui_print ""
 EOF
 
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
-zip -r $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip * &> /dev/null
-if ! [ -a $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip ]; then
+zip -r $workdir/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
+if ! [ -a $workdir/Turnip-$mesaver-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
 else
     clear
@@ -433,19 +445,19 @@ else
  cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
-  "name": "Freedreno Turnip Driver v$mesa_version_code $mesa_release",
-  "description": "Compiled using Android NDK $ndk_version_code",
+  "name": "Freedreno Turnip Driver $mesaver",
+  "description": "Compiled using Android NDK $ndkver",
   "author": "$author",
   "packageVersion": "3",
   "vendor": "Mesa3D",
-  "driverVersion": "Vulkan 1.4",
-  "minApi": 33,
+  "driverVersion": "$mesaver",
+  "minApi": $sdkver,
   "libraryName": "vulkan.turnip.so"
 }
 EOF
 
 # Zip the turnip .so file and meta.json file
-    if ! zip "$ZIP_FILE" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
+    if ! zip "Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
     echo -e "$red Error: Zipping driver files failed. $nocolor"
     exit 1
     fi
@@ -453,8 +465,8 @@ EOF
     clear
 
     echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-    echo $workdir/Turnip-$mesa_version_code-MAGISK-KSU.zip $'\n'
-    echo $workdir/Turnip-$mesa_version_code.zip $'\n'
+    echo $workdir/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
+    echo $workdir/Turnip-$mesaver-EMULATOR.zip $'\n'
     echo -e "$green Build Finished :). $nocolor" $'\n'
 
     # Cleanup 
