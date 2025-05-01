@@ -97,7 +97,7 @@ if [ "$deps_missing" == "1" ]; then
     echo "Missing dependencies, installing them now..." $'\n'
     sudo apt install -y $deps &> /dev/null    
 else
-    echo "" $'\n'
+    echo ""
 fi
 
 #clear
@@ -206,7 +206,6 @@ fi
 vkver="${vkver:-$default_vkver}"
 
 # Applying patches
-echo "Applying patches..." $'\n'
 srcdir="$(pwd)" #since we're in $mesadir
 if [[ -d "$patchesdir" ]]; then
     if ls "$patchesdir"/*.patch 1> /dev/null 2>&1; then        
@@ -453,9 +452,10 @@ ui_print ""
 EOF
 
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
-zip -r $workdir/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
+mkdir -p $workdir/magisk
+zip -r $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
 
-if ! [ -a $workdir/Turnip-$mesaver-MAGISK-KSU.zip ]; then
+if ! [ -a $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
 else
     #clear
@@ -477,14 +477,15 @@ cat <<EOF > "$META_FILE"
   "author": "$author",
   "packageVersion": "3",
   "vendor": "Mesa3D",
-  "driverVersion": "$vkver",
+  "driverVersion": "Vulkan $vkver",
   "minApi": $sdkver,
   "libraryName": "vulkan.turnip.so"
 }
 EOF
 
     # Zip the turnip .so file and meta.json file
-    if ! zip "Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
+    mkdir -p "emulator"
+    if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
         echo -e "$red Error: Zipping driver files failed. $nocolor"
         exit 1
     fi
@@ -492,8 +493,8 @@ EOF
     #clear
 
     echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-    echo $workdir/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
-    echo $workdir/Turnip-$mesaver-EMULATOR.zip $'\n'
+    echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
+    echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
     echo -e "$green Build Finished :). $nocolor" $'\n'
 
     # Cleanup 
