@@ -1,9 +1,16 @@
 #!/bin/bash -e
 
+# Required variables
+sdkver="33"
+default_vkver="1.4.311+"
+default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
+default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/main/mesa-main.zip"
+default_author="v3kt0r-87"
+
 # Required packages for building the turnip driver
 deps="meson ninja-build patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"
 
-# Internal variables
+# Parameter parsing
 preserve_cache=0
 custom_ndk=""
 custom_mesa=""
@@ -33,32 +40,25 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-#
-sdkver="33"
+
+# Retrieve Android Version
 andver=$(echo "$(curl -s "https://developer.android.com/tools/releases/platforms")" | grep -oP "Android \K[0-9.]+(?=.*?API level $sdkver)" | head -n1) || true
 andver="${andver:-"(sdk$sdkver)"}"
-# echo $andver
-# exit
 
-# Android NDK and Mesa version
-default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
+# Android NDK
 ndksrc="${custom_ndk:-$default_ndk}"
 ndkfile=$(basename "$ndksrc")
 ndkdir=$(basename "$ndksrc" .zip)
 ndkdir="${ndkdir%-linux}"
-
 ndkver=$(echo "$ndksrc" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 1)
 
-#default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.1.0-rc2/mesa-mesa-25.1.0-rc2.zip" 
-default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/main/mesa-main.zip"
+# Mesa source
 mesasrc="${custom_mesa:-$default_mesa}"
 mesafile=$(basename "$mesasrc")
 mesadir=$(basename "$mesasrc" .zip)
 mesaver=$(echo "$mesadir" | grep -oP '(?<=mesa-)[\d\.]+-.+' | head -n 1)
-# echo $mesaver
-# exit
 
-default_author="v3kt0r-87"
+# Defining author
 author="${author:-$default_author}"
 
 # Colors for terminal output
@@ -66,14 +66,16 @@ green='\033[0;32m'
 red='\033[0;31m'
 nocolor='\033[0m'
 
-patches_dir="$(pwd)/patches"
+# Directories
+basedir="$(pwd)"
+patchesdir="$(pwd)/patches"
 workdir="$(pwd)/turnip_workdir"
 magiskdir="$workdir/turnip_module"
 
 DRIVER_FILE="vulkan.turnip.so"
 META_FILE="meta.json"
 
-clear
+#clear
 
 echo "Checking system for required dependencies..."
 
@@ -94,13 +96,17 @@ done
 if [ "$deps_missing" == "1" ]; then
     echo "Missing dependencies, installing them now..." $'\n'
     sudo apt install -y $deps &> /dev/null    
+else
+    echo "" $'\n'
 fi
 
-clear
+#clear
 
-ndk_cache="$ndkdir $ndkfile"
-mesa_cache="$mesadir $mesafile"
-cachelist="$ndk_cache $mesa_cache"
+# Cleanup, but keeping or deleting cache from previous runs
+cachelist="$ndkfile $ndkdir $mesafile"
+if [[ ! -d "$patchesdir" || ! $(ls "$patchesdir"/*.patch 2> /dev/null) ]]; then
+    cachelist="$cachelist $mesadir"
+fi
 
 if [ ! -d "$workdir" ]; then
     echo "Creating the work directory..." $'\n'
@@ -137,9 +143,12 @@ if [ ! -d "$ndkdir" ]; then
         if [[ "$ndksrc" =~ ^https?:// ]]; then
             echo "Downloading Android NDK..." $'\n'
             curl $ndksrc --output "$ndkfile" &> /dev/null
-        elif [[ "$ndksrc" == /* || "$ndksrc" == ~/* || "$ndksrc" == .* || "$ndksrc" == */* ]]; then
+        elif [[ "$ndksrc" == /* || "$ndksrc" == ~/* ]]; then
             echo "Copying Android NDK..." $'\n'
             cp $ndksrc $ndkfile
+        elif [[ "$ndksrc" == .* || "$ndksrc" == */* ]]; then
+            echo "Copying Android NDK..." $'\n'
+            cp "$basedir/$ndksrc" $ndkfile
         else
             echo "Invalid NDK source: $ndksrc" $'\n'
             exit 1
@@ -155,9 +164,12 @@ if [ ! -d "$mesadir" ]; then
         if [[ "$mesasrc" =~ ^https?:// ]]; then
             echo "Downloading Mesa source..." $'\n'
             curl $mesasrc --output "$mesafile" &> /dev/null
-        elif [[ "$mesasrc" == /* || "$mesasrc" == ~/* || "$mesasrc" == .* || "$mesasrc" == */* ]]; then
+        elif [[ "$mesasrc" == /* || "$mesasrc" == ~/* ]]; then
             echo "Copying Mesa source..." $'\n'
             cp $mesasrc $mesafile
+        elif [[ "$ndksrc" == .* || "$ndksrc" == */* ]]; then
+            echo "Copying Mesa source..." $'\n'
+            cp "$basedir/$mesasrc" $mesafile
         else
             echo "Invalid Mesa source: $mesasrc" $'\n'
             exit 1
@@ -170,34 +182,48 @@ cd $mesadir
 
 sleep 2
 
-clear
+#clear
 
 # Fallback for mesaver retrieval
 if [[ -z "$mesaver" ]]; then
     mesaver=$(cat "VERSION" | grep -oP '^[\d\.]+-.+' | head -n 1)
 fi
-# echo $mesaver
-# exit
+
+# Retrieving Vulkan Version
+vkxml="src/vulkan/registry/vk.xml"
+vkver=""
+if [[ -f "$vkxml" ]]; then
+    # Extract patch (VK_HEADER_VERSION)
+    vkpatch=$(grep -A 1 '<type api="vulkan" category="define"' "$vkxml" | grep -oP '#define <name>VK_HEADER_VERSION</name>\s*\K\d+')
+    
+    # Extract variant, major, minor from VK_HEADER_VERSION_COMPLETE
+    read vkvariant vkmajor vkminor <<< $(grep -A 1 '<type api="vulkan" category="define"' "$vkxml" | grep -oP '#define <name>VK_HEADER_VERSION_COMPLETE</name> <type>VK_MAKE_API_VERSION</type>\(\K[0-9]+,\s*[0-9]+,\s*[0-9]+' | sed 's/,//g')
+
+    if [[ -n "$vkpatch" && -n "$vkmajor" && -n "$vkminor" ]]; then
+        vkver="${vkmajor}.${vkminor}.${vkpatch}"
+    fi
+fi
+vkver="${vkver:-$default_vkver}"
 
 # Applying patches
 echo "Applying patches..." $'\n'
 srcdir="$(pwd)" #since we're in $mesadir
-if [[ -d "$patches_dir" ]]; then
-    if ls "$patches_dir"/*.patch 1> /dev/null 2>&1; then        
+if [[ -d "$patchesdir" ]]; then
+    if ls "$patchesdir"/*.patch 1> /dev/null 2>&1; then        
         # Apply patches here
 
-        for patch in "$patches_dir"/*.patch; do       
+        for patch in "$patchesdir"/*.patch; do       
             if [[ -f "$patch" ]]; then
-                patch_file_name=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
+                patchfile=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
 
-                hash1=$(cksum $patch_file_name)
+                hash1=$(cksum $patchfile)
                 
                 echo -n "Applying $(basename "$patch")... "                
                 patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true                
                 
-                hash2=$(cksum $patch_file_name)
+                hash2=$(cksum $patchfile)
                 
-                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patch_file_name"; then
+                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patchfile"; then
                 if [[ "$hash1" != "$hash2" ]]; then
                     echo "Success!" $'\n'
                 else
@@ -216,7 +242,7 @@ fi
 
 sleep 2
 
-clear
+#clear
 # Set NDK Clang bin directory
 ndk_bin="$workdir/$ndkdir/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
@@ -428,12 +454,13 @@ EOF
 
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
 zip -r $workdir/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
+
 if ! [ -a $workdir/Turnip-$mesaver-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
 else
-    clear
+    #clear
 
-    echo " Its time to create Turnip build for EMULATOR"
+    echo " Its time to create Turnip build for EMULATOR"  $'\n'
 
     sleep 2
 
@@ -441,8 +468,8 @@ else
 
     mv vulkan.adreno.so vulkan.turnip.so
 
-# Create meta.json file for turnip emulator
- cat <<EOF > "$META_FILE"
+    # Create meta.json file for turnip emulator
+cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
   "name": "Freedreno Turnip Driver $mesaver",
@@ -450,19 +477,19 @@ else
   "author": "$author",
   "packageVersion": "3",
   "vendor": "Mesa3D",
-  "driverVersion": "$mesaver",
+  "driverVersion": "$vkver",
   "minApi": $sdkver,
   "libraryName": "vulkan.turnip.so"
 }
 EOF
 
-# Zip the turnip .so file and meta.json file
+    # Zip the turnip .so file and meta.json file
     if ! zip "Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
-    echo -e "$red Error: Zipping driver files failed. $nocolor"
-    exit 1
+        echo -e "$red Error: Zipping driver files failed. $nocolor"
+        exit 1
     fi
 
-    clear
+    #clear
 
     echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
     echo $workdir/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
