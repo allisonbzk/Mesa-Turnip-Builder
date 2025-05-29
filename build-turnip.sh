@@ -56,7 +56,7 @@ ndkver=$(echo "$ndksrc" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 
 mesasrc="${custom_mesa:-$default_mesa}"
 mesafile=$(basename "$mesasrc")
 mesadir=$(basename "$mesasrc" .zip)
-mesaver=$(echo "$mesadir" | grep -oP '(?<=mesa-)[\d\.]+-.+' | head -n 1)
+mesaver=$(echo "$mesadir" | grep -oP '(?<=mesa-)[\d\.]+.+' | head -n 1)
 
 # Defining author
 author="${author:-$default_author}"
@@ -240,6 +240,12 @@ else
 fi
 
 sleep 2
+
+echo "Author: $author" 
+echo "Android version: $andver" 
+echo "Vulkan version: $vkver" 
+echo "Android NDK: $ndkver" 
+echo "Mesa version: $mesaver" $'\n'
 
 #clear
 # Set NDK Clang bin directory
