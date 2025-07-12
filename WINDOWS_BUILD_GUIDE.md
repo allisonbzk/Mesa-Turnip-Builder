@@ -1,6 +1,8 @@
 # Building Mesa/Turnip on Windows with MSYS2 and VS Code
 
-This guide covers all steps and settings needed to build Mesa/Turnip on Windows using MSYS2 and VS Code, based on a workflow that is confirmed to work.
+**This guide is based on a workflow confirmed to work for building Mesa/Turnip on Windows with MSYS2 and VS Code. MAY BE PARTIAL! Some path exports, python env creation, or other msys2 related stuff may be missing and should be improved upon next install usages.**
+
+This guide is aimed to cover all steps and settings needed to build Mesa/Turnip on Windows using MSYS2 and VS Code, based on a workflow that is confirmed to work.
 
 ## 1. Install MSYS2
 - Download from [https://www.msys2.org/](https://www.msys2.org/)
@@ -92,5 +94,3 @@ adb push -a ./turnip_workdir/magisk   "$driver_dir"
 - If you encounter path or environment issues, verify your VS Code settings and shell profile.
 
 ---
-
-**This guide is based on a workflow confirmed to work for building Mesa/Turnip on Windows with MSYS2 and VS Code.**
