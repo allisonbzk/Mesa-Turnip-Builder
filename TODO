@@ -1,0 +1,12 @@
+
+Mudar logica da aplicacao do patch para verificar se ele ja foi aplicado, para passar a preservar o cache da mesa
+
+if patch --dry-run -p0 < "$patchfile" 2>&1 | tee patch_check.log | grep -q "FAILED"; then
+    echo "❌ Patch failed — halting."
+    exit 1
+elif grep -q "Reversed (or previously applied) patch detected" patch_check.log; then
+    echo "✅ Patch already applied — skipping."
+else
+    echo "✅ Applying patch..."
+    patch -p0 < "$patchfile"
+fi
