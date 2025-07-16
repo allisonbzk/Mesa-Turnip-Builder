@@ -90,6 +90,7 @@ META_FILE="meta.json"
 echo "Checking system for required dependencies..."
 
 
+missing_packages=()
 for deps_chk in $deps; do
     if [[ "$deps_chk" == python-* ]]; then
         # Extract module name (e.g. python-mako -> mako)
@@ -97,49 +98,41 @@ for deps_chk in $deps; do
         # Special case for python-pip -> pip
         [[ "$py_mod" == "pip" ]] && py_mod="pip"
         if pacman -Q $deps_chk &>/dev/null || python3 -c "import $py_mod" &>/dev/null; then
-            echo -e "$green - $deps_chk (or pip $py_mod) found $nocolor"
+            echo -e "$green ✅ $deps_chk (or pip $py_mod) found $nocolor"
         else
-            echo -e "$red - $deps_chk (and pip $py_mod) not found $nocolor"
-            deps_missing=1
+            echo -e "$red ❌ $deps_chk (and pip $py_mod) not found $nocolor"
+            missing_packages+=("$deps_chk")
         fi
     else
         if pacman -Q $deps_chk &>/dev/null; then
-            echo -e "$green - $deps_chk found $nocolor"
+            echo -e "$green ✅ $deps_chk found $nocolor"
         else
-            echo -e "$red - $deps_chk not found $nocolor"
-            deps_missing=1
+            echo -e "$red ❌ $deps_chk not found $nocolor"
+            missing_packages+=("$deps_chk")
         fi
     fi
 done
 
-if [ "$deps_missing" == "1" ]; then
-    echo "Missing dependencies, installing them now..." $'\n'
-    pacman -S --noconfirm $deps
+if (( ${#missing_packages[@]} > 0 )); then
+    echo -e "\nMissing dependencies, installing them now...\n"
+    pacman -S --noconfirm "${missing_packages[@]}"
 else
-    echo ""
-fi
-
-#clear
-
-# Cleanup, but keeping or deleting cache from previous runs
-cachelist="$ndkfile $ndkdir $mesafile"
-if [[ ! -d "$patchesdir" || ! $(ls "$patchesdir"/*.patch 2> /dev/null) ]]; then
-    cachelist="$cachelist $mesadir"
-else
-    echo "Patches directory found, Forcing $mesadir cleanup." $'\n'
+    echo -e "\nAll dependencies are already satisfied.\n"
 fi
 
 if [ ! -d "$workdir" ]; then
     echo "Creating the work directory..." $'\n'
     mkdir -p "$workdir" && cd "$_"
 else
+    # Cleanup, but keeping or deleting cache from previous runs
+    cachelist="$ndkfile $ndkdir $mesafile $mesadir"
     cd "$workdir"
 
     find_conditions=""
     if [[ $preserve_cache -eq 1 ]]; then
         for name in $cachelist; do    
             if [ -e "$name" ]; then #TODO: ADD INTEGRITY CHECK        
-                echo "[*] Keeping $name" $'\n'
+                echo "✅ Keeping $name"
                 if [ -n "$find_conditions" ]; then
                     find_conditions+=" -or "    
                 fi
@@ -226,33 +219,43 @@ if [[ -f "$vkxml" ]]; then
 fi
 vkver="${vkver:-$default_vkver}"
 
+echo -n $'\n'
+echo "Author: $author" 
+echo "Android version: $andver" 
+echo "Vulkan version: $vkver" 
+echo "Android NDK: $ndkver" 
+echo "Mesa version: $mesaver" $'\n'
+
 # Applying patches
 srcdir="$(pwd)" #since we're in $mesadir
 if [[ -d "$patchesdir" ]]; then
     if ls "$patchesdir"/*.patch 1> /dev/null 2>&1; then        
         # Apply patches here
         echo -n "Applying patches (if any)..." $'\n'
-        for patch in "$patchesdir"/*.patch; do
-            if [[ -f "$patch" ]]; then
-                patchfile=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
-
-                hash1=$(cksum $patchfile)
-                
-                echo "[*] Applying $(basename "$patch")... "                
-                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true                
-                
-                hash2=$(cksum $patchfile)
-                
-                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patchfile"; then
-                if [[ "$hash1" != "$hash2" ]]; then
-                    echo "Success!" $'\n'
-                else
-                    echo "failed. Output: "
-                    echo "$patch_output"
+        for patchfile in "$patchesdir"/*.patch; do
+            if [[ -f "$patchfile" ]]; then
+                topatch=$(sed -n '2p' "$patchfile" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
+                if patch --dry-run -p0 -d "$srcdir" < "$patchfile" 2>&1 | tee patch_check.log | grep -q "FAILED"; then
+                    echo "❌ Patch $(basename "$patchfile") failed — halting."
                     exit 1
+                elif grep -q "Reversed (or previously applied) patch detected" patch_check.log; then
+                    echo "[*] Patch $(basename "$patchfile") already applied — skipping."
+                else
+                    hash1=$(cksum $topatch)
+                    echo -n "✅ Applying $(basename "$patchfile")... "
+                    patch_output="$(patch -p0 -d "$srcdir"  < "$patchfile" 2>&1)" || true
+                    hash2=$(cksum $topatch)
+                    if [[ "$hash1" != "$hash2" ]]; then
+                        echo "Success!" #$'\n'
+                    else
+                        echo "failed. Output: "
+                        echo "$patch_output"
+                        exit 1
+                    fi
                 fi
             fi
         done
+        echo "All patches applied successfully." $'\n'
     else
         echo "No patch files found. Skipping patches." $'\n'
     fi    
@@ -261,12 +264,6 @@ else
 fi
 
 sleep 2
-
-echo "Author: $author" 
-echo "Android version: $andver" 
-echo "Vulkan version: $vkver" 
-echo "Android NDK: $ndkver" 
-echo "Mesa version: $mesaver" $'\n'
 
 #clear
 # Set NDK Clang bin directory
@@ -360,6 +357,14 @@ endian = 'little'
 EOF
 
 echo "Generating build files..." $'\n'
+
+if [[ "$building_os" == "windows" ]]; then
+    mingw_bin=/mingw64/bin
+    if [[ ":$PATH:" != *":$mingw_bin:"* ]]; then
+        export PATH="$mingw_bin:$PATH"
+    fi
+fi
+
 # Set up Meson build configuration
 CC=clang CXX=clang++ meson setup build-android-aarch64 \
     --cross-file "$workdir/$mesadir/android-aarch64.txt" \
@@ -520,18 +525,19 @@ zip -r $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
 
 if ! [ -a $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
-else
-    #clear
+fi
 
-    echo " Its time to create Turnip build for EMULATOR"  $'\n'
+#clear
 
-    sleep 2
+echo " Its time to create Turnip build for EMULATOR"  $'\n'
 
-    cd ..
+sleep 2
 
-    mv vulkan.adreno.so vulkan.turnip.so
+cd ..
 
-    # Create meta.json file for turnip emulator
+mv vulkan.adreno.so vulkan.turnip.so
+
+# Create meta.json file for turnip emulator
 cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
@@ -546,25 +552,24 @@ cat <<EOF > "$META_FILE"
 }
 EOF
 
-    # Zip the turnip .so file and meta.json file
-    mkdir -p "emulator"
-    if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
-        echo -e "$red Error: Zipping driver files failed. $nocolor"
-        exit 1
-    fi
-
-    #clear
-
-    echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-    echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
-    echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
-    echo -e "$green Build Finished :). $nocolor" $'\n'
-
-    # Cleanup 
-    rm "$DRIVER_FILE" "$META_FILE"
-    
-    # Clean up fake-cc directory and symbolic links on exit
-    rm -rf /tmp/fake-cc/cc
-    rm -rf /tmp/fake-cc/c++
-    rm -rf /tmp/fake-cc
+# Zip the turnip .so file and meta.json file
+mkdir -p "emulator"
+if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
+    echo -e "$red Error: Zipping driver files failed. $nocolor"
+    exit 1
 fi
+
+#clear
+
+echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
+echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
+echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
+echo -e "$green Build Finished :). $nocolor" $'\n'
+
+# Cleanup 
+rm "$DRIVER_FILE" "$META_FILE"
+
+# Clean up fake-cc directory and symbolic links on exit
+rm -rf /tmp/fake-cc/cc
+rm -rf /tmp/fake-cc/c++
+rm -rf /tmp/fake-cc

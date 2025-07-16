@@ -1,5 +1,8 @@
 #!/bin/bash -e
 
+echo "in case you forgot: this is broken. use main instead. or fix this one."
+exit 1
+
 # Required variables
 sdkver="34" #"33"
 default_vkver="1.4.311+"
@@ -11,6 +14,7 @@ default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$default_mesave
 default_author="v3kt0r-87"
 
 if [[ "$building_os" == "windows" ]]; then
+    # mingw-w64-x86_64-llvm
     deps="mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-python mingw-w64-x86_64-python-pip mingw-w64-x86_64-python-mako mingw-w64-x86_64-python-yaml mingw-w64-x86_64-glslang unzip curl flex bison zip patch"
 elif [[ "$building_os" == "linux" ]]; then
     deps="meson ninja-build patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"    
@@ -89,7 +93,7 @@ META_FILE="meta.json"
 
 echo "Checking system for required dependencies..."
 
-
+missing_packages=()
 for deps_chk in $deps; do
     if [[ "$deps_chk" == python-* ]]; then
         # Extract module name (e.g. python-mako -> mako)
@@ -100,23 +104,23 @@ for deps_chk in $deps; do
             echo -e "$green - $deps_chk (or pip $py_mod) found $nocolor"
         else
             echo -e "$red - $deps_chk (and pip $py_mod) not found $nocolor"
-            deps_missing=1
+            missing_packages+=("$deps_chk")
         fi
     else
         if pacman -Q $deps_chk &>/dev/null; then
             echo -e "$green - $deps_chk found $nocolor"
         else
             echo -e "$red - $deps_chk not found $nocolor"
-            deps_missing=1
+            missing_packages+=("$deps_chk")
         fi
     fi
 done
 
-if [ "$deps_missing" == "1" ]; then
-    echo "Missing dependencies, installing them now..." $'\n'
-    pacman -S --noconfirm $deps
+if (( ${#missing_packages[@]} > 0 )); then
+    echo -e "\nMissing dependencies, installing them now...\n"
+    pacman -S --noconfirm "${missing_packages[@]}"
 else
-    echo ""
+    echo -e "\nAll dependencies are already satisfied.\n"
 fi
 
 if [ ! -d "$workdir" ]; then
@@ -124,12 +128,7 @@ if [ ! -d "$workdir" ]; then
     mkdir -p "$workdir" && cd "$_"
 else
     # Cleanup, but keeping or deleting cache from previous runs
-    cachelist="$ndkfile $ndkdir $mesafile"
-    if [[ ! -d "$patchesdir" || ! $(ls "$patchesdir"/*.patch 2> /dev/null) ]]; then
-        cachelist="$cachelist $mesadir"
-    else
-        echo "Patches directory found, Forcing $mesadir cleanup."
-    fi
+    cachelist="$ndkfile $ndkdir $mesafile $mesadir"
     cd "$workdir"
 
     find_conditions=""
@@ -236,24 +235,26 @@ if [[ -d "$patchesdir" ]]; then
     if ls "$patchesdir"/*.patch 1> /dev/null 2>&1; then        
         # Apply patches here
         echo -n "Applying patches (if any)..." $'\n'
-        for patch in "$patchesdir"/*.patch; do
-            if [[ -f "$patch" ]]; then
-                patchfile=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
-
-                hash1=$(cksum $patchfile)
-                
-                echo -n "[*] Applying $(basename "$patch")... "                
-                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true                
-                
-                hash2=$(cksum $patchfile)
-                
-                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patchfile"; then
-                if [[ "$hash1" != "$hash2" ]]; then
-                    echo "Success!" #$'\n'
-                else
-                    echo "failed. Output: "
-                    echo "$patch_output"
+        for patchfile in "$patchesdir"/*.patch; do
+            if [[ -f "$patchfile" ]]; then
+                topatch=$(sed -n '2p' "$patchfile" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
+                if patch --dry-run -p0 -d "$srcdir" < "$patchfile" 2>&1 | tee patch_check.log | grep -q "FAILED"; then
+                    echo "❌ Patch $(basename "$patchfile") failed — halting."
                     exit 1
+                elif grep -q "Reversed (or previously applied) patch detected" patch_check.log; then
+                    echo "✅ Patch $(basename "$patchfile") already applied — skipping."
+                else
+                    hash1=$(cksum $topatch)
+                    echo -n "[*] Applying $(basename "$patchfile")... "
+                    patch_output="$(patch -p0 -d "$srcdir"  < "$patchfile" 2>&1)" || true
+                    hash2=$(cksum $topatch)
+                    if [[ "$hash1" != "$hash2" ]]; then
+                        echo "Success!" #$'\n'
+                    else
+                        echo "failed. Output: "
+                        echo "$patch_output"
+                        exit 1
+                    fi
                 fi
             fi
         done
@@ -375,11 +376,15 @@ CC=clang CXX=clang++ meson setup build-android-aarch64 \
     -Dplatforms=android \
     -Dplatform-sdk-version=$sdkver \
     -Dandroid-stub=true \
-    -Dgallium-drivers= \
+    -Dgallium-drivers=zink \
+    -Dllvm=disabled \
     -Dvulkan-drivers=freedreno \
     -Dfreedreno-kmds=kgsl \
     -Db_lto=true \
-    -Degl=disabled \
+    -Degl=enabled \
+    -Dgles1=disabled \
+    -Dgles2=enabled \
+    -Dshared-glapi=enabled \
     -Dstrip=true &> $workdir/meson_log
 
 # Compile build files using Ninja
@@ -443,7 +448,6 @@ install_module
 exit 0
 EOF
 
-# Create updater-script
 cat <<EOF >"$meta/updater-script"
 #MAGISK
 EOF
@@ -497,6 +501,13 @@ set_perm_recursive \$MODPATH/system 0 0 755 u:object_r:system_file:s0
 set_perm_recursive \$MODPATH/system/vendor 0 2000 755 u:object_r:vendor_file:s0
 set_perm \$MODPATH/system/vendor/lib64/hw/vulkan.adreno.so 0 0 0644 u:object_r:same_process_hal_file:s0
 
+# EGL/GLES2 permissions (only if present)
+[ -f "$MODPATH/system/vendor/lib64/egl/libEGL_adreno.so" ] && \
+    set_perm "$MODPATH/system/vendor/lib64/egl/libEGL_adreno.so" 0 0 0644 u:object_r:same_process_hal_file:s0
+
+[ -f "$MODPATH/system/vendor/lib64/egl/libGLESv2_adreno.so" ] && \
+    set_perm "$MODPATH/system/vendor/lib64/egl/libGLESv2_adreno.so" 0 0 0644 u:object_r:same_process_hal_file:s0
+
 ui_print ""
 ui_print " Cleaning GPU Cache ... Please wait!"
 find /data/user_de/*/*/*cache/* -iname "*shader*" -exec rm -rf {} +
@@ -521,31 +532,6 @@ ui_print "BY: @$author"
 ui_print ""
 EOF
 
-echo "Packing driver files into Magisk/KSU module ..." $'\n'
-
-# Create additional directories for EGL/OpenGL overrides
-mkdir -p "$magiskdir/system/vendor/lib64/egl"
-
-# Assume EGL and GLESv2 built exist at fixed locations (user can tweak if not)
-# You can customize this if you build these from Mesa too
-libegl="$workdir/$ndkdir/toolchains/llvm/prebuilt/$building_os-x86_64/sysroot/usr/lib/x86_64-linux-android/$sdkver/libEGL.so"
-
-if [[ -f $libegl ]]; then
-    echo "Copying libEGL.so to Magisk module..." $'\n'
-    cp "$libegl" "$magiskdir/system/vendor/lib64/egl/libEGL_adreno.so"
-else
-    echo -e "$red $libegl not found! Skipping EGL copy.$nocolor" $'\n'
-fi
-
-libGLESv2="$workdir/$ndkdir/toolchains/llvm/prebuilt/$building_os-x86_64/sysroot/usr/lib/x86_64-linux-android/$sdkver/libGLESv2.so"
-if [[ -f $libGLESv2 ]]; then
-    echo "Copying libGLESv2.so to Magisk module..." $'\n'
-    cp "$libGLESv2" "$magiskdir/system/vendor/lib64/egl/libGLESv2_adreno.so"
-else
-    echo -e "$red $libGLESv2 not found! Skipping GLESv2 copy.$nocolor" $'\n'
-fi
-
-# Also place a Vulkan ICD JSON that explicitly points to our override
 echo "Creating Vulkan ICD JSON..." $'\n'
 mkdir -p "$magiskdir/system/vendor/etc/vulkan/icd.d"
 cat <<EOF > "$magiskdir/system/vendor/etc/vulkan/icd.d/mesa_turnip.json"
@@ -553,37 +539,38 @@ cat <<EOF > "$magiskdir/system/vendor/etc/vulkan/icd.d/mesa_turnip.json"
   "file_format_version": "1.0.0",
   "ICD": {
     "library_path": "/vendor/lib64/hw/vulkan.adreno.so",
-    "api_version": "1.2.0"
+    "api_version": "$vkver"
   }
 }
 EOF
 
-# Create service.sh to bind mount and reset properties (in Magisk mode)
 echo "Creating service.sh for Magisk module..." $'\n'
 cat <<'EOF' > "$magiskdir/service.sh"
 #!/system/bin/sh
 MODDIR=${0%/*}
+export MESA_GLTHREAD=true
+# Bind Vulkan
+if [ -f "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" ]; then
+    mount --bind "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" /vendor/lib64/hw/vulkan.adreno.so
+fi
 
-# Ensure Vulkan is used from Mesa and not Adreno blob
-mount --bind "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" \
-             /vendor/lib64/hw/vulkan.adreno.so
+# Bind GLESv2
+if [ -f "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" ]; then
+    mount --bind "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" /vendor/lib64/egl/libGLESv2_adreno.so
+fi
 
-# Override GLES libraries (if present)
-[ -f "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" ] && \
-    mount --bind "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" \
-                /vendor/lib64/egl/libGLESv2_adreno.so
+# Bind EGL
+if [ -f "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" ]; then
+    mount --bind "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" /vendor/lib64/egl/libEGL_adreno.so
+fi
 
-[ -f "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" ] && \
-    mount --bind "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" \
-                /vendor/lib64/egl/libEGL_adreno.so
-
-# Reset Vulkan driver property (requires Magisk's resetprop)
-resetprop ro.hardware.vulkan turnip
-resetprop ro.gfx.driver.0 org.freedesktop.mesa
+# Optional: force override system properties (requires resetprop)
+command -v resetprop >/dev/null && resetprop ro.hardware.vulkan turnip
+command -v resetprop >/dev/null && resetprop ro.gfx.driver.0 org.freedesktop.mesa
 EOF
 chmod +x "$magiskdir/service.sh"
 
-echo "Finalizing Magisk module structure..." $'\n'
+echo "Packing driver files into Magisk/KSU module ..." $'\n'
 mkdir -p $workdir/magisk
 zip -r $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
 
@@ -634,6 +621,6 @@ echo -e "$green Build Finished :). $nocolor" $'\n'
 rm "$DRIVER_FILE" "$META_FILE"
 
 # Clean up fake-cc directory and symbolic links on exit
-rm -rf /tmp/fake-cc/cc
-rm -rf /tmp/fake-cc/c++
-rm -rf /tmp/fake-cc
+rm -rf "$workdir/fake-cc/cc"
+rm -rf "$workdir/fake-cc/c++"
+rm -rf "$workdir/fake-cc"
