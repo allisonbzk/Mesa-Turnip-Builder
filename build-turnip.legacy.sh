@@ -1,27 +1,14 @@
 #!/bin/bash -e
 
-echo "in case you forgot: this is broken. use main instead. or fix this one."
-exit 1
-
 # Required variables
-sdkver="34" #"33"
+sdkver="33"
 default_vkver="1.4.311+"
-building_os="windows" #"linux"
-default_ndkver="android-ndk-r29-beta2" #"android-ndk-r28b"
-default_ndk="https://dl.google.com/android/repository/$default_ndkver-$building_os.zip"
-default_mesaver="mesa-25.1.5" #"main"
-default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$default_mesaver/mesa-$default_mesaver.zip"
+default_ndk="https://dl.google.com/android/repository/android-ndk-r28b-linux.zip"
+default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/main/mesa-main.zip"
 default_author="v3kt0r-87"
 
-if [[ "$building_os" == "windows" ]]; then
-    # mingw-w64-x86_64-llvm
-    deps="mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-python mingw-w64-x86_64-python-pip mingw-w64-x86_64-python-mako mingw-w64-x86_64-python-yaml mingw-w64-x86_64-glslang unzip curl flex bison zip patch"
-elif [[ "$building_os" == "linux" ]]; then
-    deps="meson ninja-build patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"    
-else
-    echo "[ERROR] Unsupported building OS: $building_os"
-    exit 1
-fi
+# Required packages for building the turnip driver
+deps="meson ninja-build patchelf unzip curl flex bison zip python3 python3-pip python3-mako python-is-python3 glslang-tools"
 
 # Parameter parsing
 preserve_cache=0
@@ -62,8 +49,7 @@ andver="${andver:-"(sdk$sdkver)"}"
 ndksrc="${custom_ndk:-$default_ndk}"
 ndkfile=$(basename "$ndksrc")
 ndkdir=$(basename "$ndksrc" .zip)
-ndkdir="${ndkdir%${building_os}}" # Remove OS suffix
-ndkdir="${ndkdir%-}" # Remove trailing hyphen if present
+ndkdir="${ndkdir%-linux}"
 ndkver=$(echo "$ndksrc" | grep -oP '(?<=android-ndk-r)[0-9\.]+[a-z]*' | head -n 1)
 
 # Mesa source
@@ -93,49 +79,46 @@ META_FILE="meta.json"
 
 echo "Checking system for required dependencies..."
 
-missing_packages=()
+# Check for required dependencies 
+aptlist=$(apt list --installed 2>/dev/null)
 for deps_chk in $deps; do
-    if [[ "$deps_chk" == python-* ]]; then
-        # Extract module name (e.g. python-mako -> mako)
-        py_mod=${deps_chk#python-}
-        # Special case for python-pip -> pip
-        [[ "$py_mod" == "pip" ]] && py_mod="pip"
-        if pacman -Q $deps_chk &>/dev/null || python3 -c "import $py_mod" &>/dev/null; then
-            echo -e "$green - $deps_chk (or pip $py_mod) found $nocolor"
-        else
-            echo -e "$red - $deps_chk (and pip $py_mod) not found $nocolor"
-            missing_packages+=("$deps_chk")
-        fi
+    sleep 0.025
+    
+    if echo "$aptlist" | grep -q "^$deps_chk" >/dev/null 2>&1; then
+        echo -e "$green - $deps_chk found $nocolor"
     else
-        if pacman -Q $deps_chk &>/dev/null; then
-            echo -e "$green - $deps_chk found $nocolor"
-        else
-            echo -e "$red - $deps_chk not found $nocolor"
-            missing_packages+=("$deps_chk")
-        fi
+        echo -e "$red - $deps_chk not found $nocolor"
+        deps_missing=1
     fi
 done
 
-if (( ${#missing_packages[@]} > 0 )); then
-    echo -e "\nMissing dependencies, installing them now...\n"
-    pacman -S --noconfirm "${missing_packages[@]}"
+# Install missing dependencies automatically
+if [ "$deps_missing" == "1" ]; then
+    echo "Missing dependencies, installing them now..." $'\n'
+    sudo apt install -y $deps &> /dev/null    
 else
-    echo -e "\nAll dependencies are already satisfied.\n"
+    echo ""
+fi
+
+#clear
+
+# Cleanup, but keeping or deleting cache from previous runs
+cachelist="$ndkfile $ndkdir $mesafile"
+if [[ ! -d "$patchesdir" || ! $(ls "$patchesdir"/*.patch 2> /dev/null) ]]; then
+    cachelist="$cachelist $mesadir"
 fi
 
 if [ ! -d "$workdir" ]; then
     echo "Creating the work directory..." $'\n'
     mkdir -p "$workdir" && cd "$_"
 else
-    # Cleanup, but keeping or deleting cache from previous runs
-    cachelist="$ndkfile $ndkdir $mesafile $mesadir"
     cd "$workdir"
 
     find_conditions=""
     if [[ $preserve_cache -eq 1 ]]; then
         for name in $cachelist; do    
             if [ -e "$name" ]; then #TODO: ADD INTEGRITY CHECK        
-                echo "[*] Keeping $name"
+                echo "[*] Keeping $name" $'\n'
                 if [ -n "$find_conditions" ]; then
                     find_conditions+=" -or "    
                 fi
@@ -222,43 +205,33 @@ if [[ -f "$vkxml" ]]; then
 fi
 vkver="${vkver:-$default_vkver}"
 
-echo -n $'\n'
-echo "Author: $author" 
-echo "Android version: $andver" 
-echo "Vulkan version: $vkver" 
-echo "Android NDK: $ndkver" 
-echo "Mesa version: $mesaver" $'\n'
-
 # Applying patches
 srcdir="$(pwd)" #since we're in $mesadir
 if [[ -d "$patchesdir" ]]; then
     if ls "$patchesdir"/*.patch 1> /dev/null 2>&1; then        
         # Apply patches here
-        echo -n "Applying patches (if any)..." $'\n'
-        for patchfile in "$patchesdir"/*.patch; do
-            if [[ -f "$patchfile" ]]; then
-                topatch=$(sed -n '2p' "$patchfile" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
-                if patch --dry-run -p0 -d "$srcdir" < "$patchfile" 2>&1 | tee patch_check.log | grep -q "FAILED"; then
-                    echo "❌ Patch $(basename "$patchfile") failed — halting."
-                    exit 1
-                elif grep -q "Reversed (or previously applied) patch detected" patch_check.log; then
-                    echo "✅ Patch $(basename "$patchfile") already applied — skipping."
+
+        for patch in "$patchesdir"/*.patch; do       
+            if [[ -f "$patch" ]]; then
+                patchfile=$(sed -n '2p' "$patch" | sed -E 's/^\+\+\+ (.*)\t.*$/\1/')
+
+                hash1=$(cksum $patchfile)
+                
+                echo -n "Applying $(basename "$patch")... "                
+                patch_output="$(patch -p0 -d "$srcdir"  < "$patch" 2>&1)" || true                
+                
+                hash2=$(cksum $patchfile)
+                
+                #if echo "$patch_output" | tail -n 1 | grep -q "patching file $patchfile"; then
+                if [[ "$hash1" != "$hash2" ]]; then
+                    echo "Success!" $'\n'
                 else
-                    hash1=$(cksum $topatch)
-                    echo -n "[*] Applying $(basename "$patchfile")... "
-                    patch_output="$(patch -p0 -d "$srcdir"  < "$patchfile" 2>&1)" || true
-                    hash2=$(cksum $topatch)
-                    if [[ "$hash1" != "$hash2" ]]; then
-                        echo "Success!" #$'\n'
-                    else
-                        echo "failed. Output: "
-                        echo "$patch_output"
-                        exit 1
-                    fi
+                    echo "failed. Output: "
+                    echo "$patch_output"
+                    exit 1
                 fi
             fi
         done
-        echo "All patches applied successfully." $'\n'
     else
         echo "No patch files found. Skipping patches." $'\n'
     fi    
@@ -268,21 +241,17 @@ fi
 
 sleep 2
 
+echo "Author: $author" 
+echo "Android version: $andver" 
+echo "Vulkan version: $vkver" 
+echo "Android NDK: $ndkver" 
+echo "Mesa version: $mesaver" $'\n'
+
 #clear
 # Set NDK Clang bin directory
-ndk_bin="$workdir/$ndkdir/toolchains/llvm/prebuilt/$building_os-x86_64/bin"
+ndk_bin="$workdir/$ndkdir/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
 # Set toolchain variables
-
-# Set compiler extensions for Windows/Linux
-if [[ "$building_os" == "windows" ]]; then
-    cmd_ext=".cmd"
-    exe_ext=".exe"
-else
-    cmd_ext=""
-    exe_ext=""
-fi
-
 export CC=clang
 export CXX=clang++
 export AR=llvm-ar
@@ -293,49 +262,24 @@ export OBJCOPY=llvm-objcopy
 export LDFLAGS="-fuse-ld=lld"
 
 # Create a temporary directory for fake cc/c++
-mkdir -p "$workdir/fake-cc"
+mkdir -p /tmp/fake-cc
 
 # Create symbolic links to NDK-Clang
-echo "Creating symbolic links to NDK-Clang..." $'\n'
-ln -sf "$ndk_bin/clang$exe_ext" "$workdir/fake-cc/cc"
-ln -sf "$ndk_bin/clang++$exe_ext" "$workdir/fake-cc/c++"
+ln -sf "$ndk_bin/clang" /tmp/fake-cc/cc
+ln -sf "$ndk_bin/clang++" /tmp/fake-cc/c++
 
 # Prepend both fake-cc and NDK bin to PATH
-export PATH="$workdir/fake-cc:$ndk_bin:$PATH"
-
-if [[ ! -f "$ndk_bin/clang$exe_ext" ]]; then
-    echo "[ERROR] clang.exe not found at $ndk_bin/clang$exe_ext"
-    ls -l "$ndk_bin" # List contents for troubleshooting
-    exit 1
-fi
+export PATH="/tmp/fake-cc:$ndk_bin:$PATH"
 
 echo "Creating Meson cross file..." $'\n'
-# Use .exe for c/cpp if building_os is windows, else use aarch64-linux-android${sdkver}-clang
-if [[ "$building_os" == "windows" ]]; then
-    meson_c_bin=$(cygpath -w "$ndk_bin/aarch64-linux-android${sdkver}-clang$cmd_ext")
-    meson_cpp_bin=$(cygpath -w "$ndk_bin/aarch64-linux-android${sdkver}-clang++$cmd_ext")
-    meson_ld_bin=$(cygpath -w "$ndk_bin/ld.lld$exe_ext")
-    meson_ar_bin=$(cygpath -w "$ndk_bin/llvm-ar")
-    meson_strip_bin=$(cygpath -w "$ndk_bin/aarch64-linux-android-strip")
-elif [[ "$building_os" == "linux" ]]; then
-    meson_c_bin="$ndk_bin/aarch64-linux-android${sdkver}-clang"
-    meson_cpp_bin="$ndk_bin/aarch64-linux-android${sdkver}-clang++"
-    meson_ld_bin="$ndk_bin/ld.lld$exe_ext"
-    meson_ar_bin="$ndk_bin/llvm-ar"
-    meson_strip_bin="$ndk_bin/aarch64-linux-android-strip"
-else
-    echo "[ERROR] Unsupported building OS: $building_os"
-    exit 1
-fi
-
 cat <<EOF >"android-aarch64.txt"
 [binaries]
-ar = '$meson_ar_bin'
-c = ['ccache', '$meson_c_bin']
-cpp = ['ccache', '$meson_cpp_bin', '--start-no-unused-arguments', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++', '--end-no-unused-arguments', '-Wno-error=c++11-narrowing']
-c_ld = '$meson_ld_bin'
-cpp_ld = '$meson_ld_bin'
-strip = '$meson_strip_bin'
+ar = '$ndk_bin/llvm-ar'
+c = ['ccache', '$ndk_bin/aarch64-linux-android$sdkver-clang']
+cpp = ['ccache', '$ndk_bin/aarch64-linux-android$sdkver-clang++', '--start-no-unused-arguments', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++', '--end-no-unused-arguments', '-Wno-error=c++11-narrowing']
+c_ld = '$ndk_bin/ld.lld'
+cpp_ld = '$ndk_bin/ld.lld'
+strip = '$ndk_bin/aarch64-linux-android-strip'
 pkg-config = ['env', 'PKG_CONFIG_LIBDIR=NDKDIR/pkg-config', '/usr/bin/pkg-config']
 
 [host_machine]
@@ -353,22 +297,13 @@ ar = 'llvm-ar'
 strip = 'llvm-strip'
 c_ld = 'ld.lld'
 cpp_ld = 'ld.lld'
-system = '$building_os'
+system = 'linux'
 cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 EOF
 
 echo "Generating build files..." $'\n'
-
-if [[ "$building_os" == "windows" ]]; then
-    mingw_bin=/mingw64/bin
-    if [[ ":$PATH:" != *":$mingw_bin:"* ]]; then
-        export PATH="$mingw_bin:$PATH"
-    fi
-fi
-
-# Set up Meson build configuration
 CC=clang CXX=clang++ meson setup build-android-aarch64 \
     --cross-file "$workdir/$mesadir/android-aarch64.txt" \
     --native-file "$workdir/$mesadir/native.txt" \
@@ -376,15 +311,11 @@ CC=clang CXX=clang++ meson setup build-android-aarch64 \
     -Dplatforms=android \
     -Dplatform-sdk-version=$sdkver \
     -Dandroid-stub=true \
-    -Dgallium-drivers=zink \
-    -Dllvm=disabled \
+    -Dgallium-drivers= \
     -Dvulkan-drivers=freedreno \
     -Dfreedreno-kmds=kgsl \
     -Db_lto=true \
-    -Degl=enabled \
-    -Dgles1=disabled \
-    -Dgles2=enabled \
-    -Dshared-glapi=enabled \
+    -Degl=disabled \
     -Dstrip=true &> $workdir/meson_log
 
 # Compile build files using Ninja
@@ -448,6 +379,7 @@ install_module
 exit 0
 EOF
 
+# Create updater-script
 cat <<EOF >"$meta/updater-script"
 #MAGISK
 EOF
@@ -501,13 +433,6 @@ set_perm_recursive \$MODPATH/system 0 0 755 u:object_r:system_file:s0
 set_perm_recursive \$MODPATH/system/vendor 0 2000 755 u:object_r:vendor_file:s0
 set_perm \$MODPATH/system/vendor/lib64/hw/vulkan.adreno.so 0 0 0644 u:object_r:same_process_hal_file:s0
 
-# EGL/GLES2 permissions (only if present)
-[ -f "$MODPATH/system/vendor/lib64/egl/libEGL_adreno.so" ] && \
-    set_perm "$MODPATH/system/vendor/lib64/egl/libEGL_adreno.so" 0 0 0644 u:object_r:same_process_hal_file:s0
-
-[ -f "$MODPATH/system/vendor/lib64/egl/libGLESv2_adreno.so" ] && \
-    set_perm "$MODPATH/system/vendor/lib64/egl/libGLESv2_adreno.so" 0 0 0644 u:object_r:same_process_hal_file:s0
-
 ui_print ""
 ui_print " Cleaning GPU Cache ... Please wait!"
 find /data/user_de/*/*/*cache/* -iname "*shader*" -exec rm -rf {} +
@@ -532,63 +457,24 @@ ui_print "BY: @$author"
 ui_print ""
 EOF
 
-echo "Creating Vulkan ICD JSON..." $'\n'
-mkdir -p "$magiskdir/system/vendor/etc/vulkan/icd.d"
-cat <<EOF > "$magiskdir/system/vendor/etc/vulkan/icd.d/mesa_turnip.json"
-{
-  "file_format_version": "1.0.0",
-  "ICD": {
-    "library_path": "/vendor/lib64/hw/vulkan.adreno.so",
-    "api_version": "$vkver"
-  }
-}
-EOF
-
-echo "Creating service.sh for Magisk module..." $'\n'
-cat <<'EOF' > "$magiskdir/service.sh"
-#!/system/bin/sh
-MODDIR=${0%/*}
-export MESA_GLTHREAD=true
-# Bind Vulkan
-if [ -f "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" ]; then
-    mount --bind "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" /vendor/lib64/hw/vulkan.adreno.so
-fi
-
-# Bind GLESv2
-if [ -f "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" ]; then
-    mount --bind "$MODDIR/system/vendor/lib64/egl/libGLESv2_adreno.so" /vendor/lib64/egl/libGLESv2_adreno.so
-fi
-
-# Bind EGL
-if [ -f "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" ]; then
-    mount --bind "$MODDIR/system/vendor/lib64/egl/libEGL_adreno.so" /vendor/lib64/egl/libEGL_adreno.so
-fi
-
-# Optional: force override system properties (requires resetprop)
-command -v resetprop >/dev/null && resetprop ro.hardware.vulkan turnip
-command -v resetprop >/dev/null && resetprop ro.gfx.driver.0 org.freedesktop.mesa
-EOF
-chmod +x "$magiskdir/service.sh"
-
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
 mkdir -p $workdir/magisk
 zip -r $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
 
 if ! [ -a $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
-fi
+else
+    #clear
 
-#clear
+    echo " Its time to create Turnip build for EMULATOR"  $'\n'
 
-echo " Its time to create Turnip build for EMULATOR"  $'\n'
+    sleep 2
 
-sleep 2
+    cd ..
 
-cd ..
+    mv vulkan.adreno.so vulkan.turnip.so
 
-mv vulkan.adreno.so vulkan.turnip.so
-
-# Create meta.json file for turnip emulator
+    # Create meta.json file for turnip emulator
 cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
@@ -603,24 +489,25 @@ cat <<EOF > "$META_FILE"
 }
 EOF
 
-# Zip the turnip .so file and meta.json file
-mkdir -p "emulator"
-if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
-    echo -e "$red Error: Zipping driver files failed. $nocolor"
-    exit 1
+    # Zip the turnip .so file and meta.json file
+    mkdir -p "emulator"
+    if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
+        echo -e "$red Error: Zipping driver files failed. $nocolor"
+        exit 1
+    fi
+
+    #clear
+
+    echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
+    echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
+    echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
+    echo -e "$green Build Finished :). $nocolor" $'\n'
+
+    # Cleanup 
+    rm "$DRIVER_FILE" "$META_FILE"
+    
+    # Clean up fake-cc directory and symbolic links on exit
+    rm -rf /tmp/fake-cc/cc
+    rm -rf /tmp/fake-cc/c++
+    rm -rf /tmp/fake-cc
 fi
-
-#clear
-
-echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
-echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
-echo -e "$green Build Finished :). $nocolor" $'\n'
-
-# Cleanup 
-rm "$DRIVER_FILE" "$META_FILE"
-
-# Clean up fake-cc directory and symbolic links on exit
-rm -rf "$workdir/fake-cc/cc"
-rm -rf "$workdir/fake-cc/c++"
-rm -rf "$workdir/fake-cc"
