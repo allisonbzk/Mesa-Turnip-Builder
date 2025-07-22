@@ -1,15 +1,21 @@
 #!/bin/bash -e
 
+# Colors for terminal output
+green='\033[0;32m'
+red='\033[0;31m'
+nocolor='\033[0m'
+
 # Required variables
 sdkver="34" #"33"
 default_vkver="1.4.311+"
 default_platform="linux"
 default_ndkver="android-ndk-r29-beta2" #"android-ndk-r28b"
 default_ndk="https://dl.google.com/android/repository/$default_ndkver-$platform.zip"
-default_mesaver="mesa-25.1.6" #"main"
+default_mesaver="mesa-25.2.0-rc1" #"mesa-25.1.6" #"main"
 default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$default_mesaver/mesa-$default_mesaver.zip"
 default_author="v3kt0r-87"
 
+# Check if the script is run as root
 uname_out="$(uname -s)"
 case "${uname_out}" in
     Linux*)     os="linux";;
@@ -20,6 +26,7 @@ case "${uname_out}" in
     *)          os=
 esac
 platform="${os:-$default_platform}"
+echo "Detected platform: $platform"
 
 if [[ "$platform" == "windows" ]]; then
     deps="mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-python mingw-w64-x86_64-python-pip mingw-w64-x86_64-python-mako mingw-w64-x86_64-python-yaml mingw-w64-x86_64-glslang unzip curl flex bison zip patch"
@@ -35,6 +42,8 @@ preserve_cache=0
 custom_ndk=""
 custom_mesa=""
 author=""
+custom_drvname=""
+custom_drvdesc=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,6 +57,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --author)
             author="$2"
+            shift 2
+            ;;
+        --drvname)
+            custom_drvname="$2"
+            shift 2
+            ;;
+        --drvdesc)
+            custom_drvdesc="$2"
             shift 2
             ;;
         --preserve-cache)
@@ -82,24 +99,25 @@ mesaver=$(echo "$mesadir" | grep -oP '(?<=mesa-)[\d\.]+.+' | head -n 1)
 # Defining author
 author="${author:-$default_author}"
 
-# Colors for terminal output
-green='\033[0;32m'
-red='\033[0;31m'
-nocolor='\033[0m'
+# Defining driver name and description
+default_drvname="Freedreno Turnip Vulkan Driver $mesaver"
+drvname="${custom_drvname:-$default_drvname}"
+
+default_drvdesc="Compiled using Android NDK $ndkver"
+drvdesc="${custom_drvdesc:-$default_drvdesc}"
 
 # Directories
 basedir="$(pwd)"
 patchesdir="$(pwd)/patches"
 workdir="$(pwd)/turnip_workdir"
 magiskdir="$workdir/turnip_module"
-
 DRIVER_FILE="vulkan.turnip.so"
 META_FILE="meta.json"
-
+magiskzip="Turnip-$mesaver-MAGISK-KSU-$author.zip"
+emulatorzip="Turnip-$mesaver-EMULATOR-$author.zip"
 #clear
 
 echo "Checking system for required dependencies..."
-
 
 missing_packages=()
 for deps_chk in $deps; do
@@ -231,11 +249,16 @@ fi
 vkver="${vkver:-$default_vkver}"
 
 echo -n $'\n'
+
 echo "Author: $author" 
 echo "Android version: $andver" 
+echo "Android SDK version: $sdkver"
 echo "Vulkan version: $vkver" 
 echo "Android NDK: $ndkver" 
-echo "Mesa version: $mesaver" $'\n'
+echo "Mesa version: $mesaver"
+echo "Driver Name: $drvname"
+echo "Driver Description: $drvdesc"
+echo "" $'\n'
 
 # Applying patches
 srcdir="$(pwd)" #since we're in $mesadir
@@ -532,9 +555,9 @@ EOF
 
 echo "Packing driver files into Magisk/KSU module ..." $'\n'
 mkdir -p $workdir/magisk
-zip -r $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip * &> /dev/null
+zip -r $workdir/magisk/$magiskzip * &> /dev/null
 
-if ! [ -a $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip ]; then
+if ! [ -a $workdir/magisk/$magiskzip ]; then
     echo -e "$red-Packing failed!$nocolor" && exit 1
 fi
 
@@ -552,8 +575,8 @@ mv vulkan.adreno.so vulkan.turnip.so
 cat <<EOF > "$META_FILE"
 {
   "schemaVersion": 1,
-  "name": "Freedreno Turnip Driver $mesaver",
-  "description": "Compiled using Android NDK $ndkver",
+  "name": $drvname,
+  "description": $drvdesc,
   "author": "$author",
   "packageVersion": "3",
   "vendor": "Mesa3D",
@@ -565,7 +588,7 @@ EOF
 
 # Zip the turnip .so file and meta.json file
 mkdir -p "emulator"
-if ! zip "emulator/Turnip-$mesaver-EMULATOR.zip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
+if ! zip "emulator/$emulatorzip" "$DRIVER_FILE" "$META_FILE" > /dev/null 2>&1; then
     echo -e "$red Error: Zipping driver files failed. $nocolor"
     exit 1
 fi
@@ -573,8 +596,8 @@ fi
 #clear
 
 echo -e "$green-All done, you can take your drivers from here;$nocolor" $'\n'
-echo $workdir/magisk/Turnip-$mesaver-MAGISK-KSU.zip $'\n'
-echo $workdir/emulator/Turnip-$mesaver-EMULATOR.zip $'\n'
+echo $workdir/magisk/$magiskzip $'\n'
+echo $workdir/emulator/$emulatorzip $'\n'
 echo -e "$green Build Finished :). $nocolor" $'\n'
 
 # Cleanup 

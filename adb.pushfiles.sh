@@ -1,3 +1,5 @@
+#!/bin/bash -e
+
 target="/c/ProgramData/Android/platform-tools"
 ip="192.168.1.104"
 driver_dir="//sdcard/games/drivers/"
