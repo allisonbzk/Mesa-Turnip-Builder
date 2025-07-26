@@ -11,7 +11,7 @@ default_vkver="1.4.311+"
 default_platform="linux"
 default_ndkver="android-ndk-r29-beta2" #"android-ndk-r28b"
 default_ndk="https://dl.google.com/android/repository/$default_ndkver-$platform.zip"
-default_mesaver="mesa-25.2.0-rc1" #"mesa-25.1.6" #"main"
+default_mesaver="mesa-25.2.0-rc2" #"mesa-25.1.6" #"main"
 default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$default_mesaver/mesa-$default_mesaver.zip"
 default_author="v3kt0r-87"
 
