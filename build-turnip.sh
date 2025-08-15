@@ -9,11 +9,14 @@ nocolor='\033[0m'
 sdkver="34" #"33"
 default_vkver="1.4.311+"
 default_platform="linux"
-default_ndkver="android-ndk-r29-beta2" #"android-ndk-r28b"
-default_ndk="https://dl.google.com/android/repository/$default_ndkver-$platform.zip"
-default_mesaver="mesa-25.2.0-rc2" #"mesa-25.1.6" #"main"
+default_ndkver="android-ndk-r29-beta3" #"android-ndk-r28b"
+default_ndk="https://dl.google.com/android/repository/$default_ndkver-$default_platform.zip"
+
+default_mesaver="25.2" #"mesa-25.1.6" #"main"
 default_mesa="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$default_mesaver/mesa-$default_mesaver.zip"
 default_author="v3kt0r-87"
+
+andverurl="https://developer.android.com/tools/releases/platforms"
 
 # Check if the script is run as root
 uname_out="$(uname -s)"
@@ -79,10 +82,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Retrieve Android Version
-andver=$(echo "$(curl -s "https://developer.android.com/tools/releases/platforms")" | grep -oP "Android \K[0-9.]+(?=.*?API level $sdkver)" | head -n1) || true
+andver=$(echo "$(curl -s $andverurl)" | grep -oP "Android \K[0-9.]+(?=.*?API level $sdkver)" | head -n1) || true
 andver="${andver:-"(sdk$sdkver)"}"
 
 # Android NDK
+default_ndk="${default_ndk//$default_platform/$platform}"
 ndksrc="${custom_ndk:-$default_ndk}"
 ndkfile=$(basename "$ndksrc")
 ndkdir=$(basename "$ndksrc" .zip)
@@ -184,7 +188,7 @@ fi
 if [ ! -d "$ndkdir" ]; then
     if [ ! -f "$ndkfile" ]; then
         if [[ "$ndksrc" =~ ^https?:// ]]; then
-            echo "Downloading Android NDK..." $'\n'
+            echo "Downloading Android NDK: $ndksrc" $'\n'
             curl $ndksrc --output "$ndkfile" &> /dev/null
         elif [[ "$ndksrc" == /* || "$ndksrc" == ~/* ]]; then
             echo "Copying Android NDK..." $'\n'
@@ -198,14 +202,23 @@ if [ ! -d "$ndkdir" ]; then
         fi        
     fi
     echo "Extracting Android NDK..." $'\n'
-    unzip "$ndkfile" &> /dev/null
+
+    # Test the zip before extracting
+    if unzip -t "$ndkfile" >/dev/null 2>&1; then
+        echo "✅ $ndkfile ZIP is valid. Extracting..."
+        unzip "$ndkfile" >/dev/null 2>&1
+    else
+        echo "❌ $ndkfile is not a valid ZIP file. Treating as error."
+        mv "$ndkfile" error_download_ndk.html
+        exit
+    fi
 fi
 
 # Download Mesa source
 if [ ! -d "$mesadir" ]; then
     if [ ! -f "$mesafile" ]; then
         if [[ "$mesasrc" =~ ^https?:// ]]; then
-            echo "Downloading Mesa source..." $'\n'
+            echo "Downloading Mesa source: $mesasrc" $'\n'
             curl $mesasrc --output "$mesafile" &> /dev/null
         elif [[ "$mesasrc" == /* || "$mesasrc" == ~/* ]]; then
             echo "Copying Mesa source..." $'\n'
@@ -219,7 +232,16 @@ if [ ! -d "$mesadir" ]; then
         fi        
     fi
     echo "Extracting Mesa source..." $'\n'
-    unzip "$mesafile" &> /dev/null
+
+    # Test the zip before extracting
+    if unzip -t "$mesafile" >/dev/null 2>&1; then
+        echo "✅ $mesafile ZIP is valid. Extracting..."
+        unzip "$mesafile" >/dev/null 2>&1
+    else
+        echo "❌ $mesafile is not a valid ZIP file. Treating as error."
+        mv "$$mesafile" error_download_mesa.html
+        exit
+    fi
 fi
 cd $mesadir
 
@@ -405,12 +427,13 @@ CC=clang CXX=clang++ meson setup build-android-aarch64 \
     --native-file "$workdir/$mesadir/native.txt" \
     -Dbuildtype=release \
     -Dplatforms=android \
-    -Dplatform-sdk-version=$sdkver \
+    -Dplatform-sdk-version="$sdkver" \
     -Dandroid-stub=true \
     -Dgallium-drivers= \
     -Dvulkan-drivers=freedreno \
     -Dfreedreno-kmds=kgsl \
     -Db_lto=true \
+    -Db_lto_mode=thin \
     -Degl=disabled \
     -Dstrip=true &> $workdir/meson_log
 
@@ -525,9 +548,8 @@ ui_print "Installing Driver Please Wait ..."
 ui_print ""
 
 sleep 1.25
-set_perm_recursive \$MODPATH/system 0 0 755 u:object_r:system_file:s0
-set_perm_recursive \$MODPATH/system/vendor 0 2000 755 u:object_r:vendor_file:s0
-set_perm \$MODPATH/system/vendor/lib64/hw/vulkan.adreno.so 0 0 0644 u:object_r:same_process_hal_file:s0
+set_perm_recursive \$MODPATH/system 0 0 755 0644
+set_perm \$MODPATH/system/vendor/lib64/hw/vulkan.adreno.so 0 0 0644
 
 ui_print ""
 ui_print " Cleaning GPU Cache ... Please wait!"
